@@ -5,5 +5,8 @@ set -e
 PROTODIR=../proto
 
 mkdir -p genproto
-# python -m grpc_tools.protoc -I$PROTODIR --python_out=./genproto/ --grpc_python_out=./genproto/ $PROTODIR
-protoc --go_out=plugins=grpc:genproto -I $PROTODIR $PROTODIR/task.proto
+protoc --python_out=genproto -I $PROTODIR $PROTODIR/models.proto
+mkdir -p genproto/models
+protoc --go_out=genproto/models -I $PROTODIR $PROTODIR/models.proto
+mkdir -p genproto/task
+protoc --go_out=plugins=grpc:genproto/task -I $PROTODIR $PROTODIR/task.proto

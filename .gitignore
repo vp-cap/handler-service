@@ -1,5 +1,9 @@
 genproto
 video
+video_inf
+*.mp4
+*.avi
+*.h5
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
