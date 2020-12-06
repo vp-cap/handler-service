@@ -4,20 +4,20 @@ import (
 	"context"
 	"io/ioutil"
 	"log"
-	"os/exec"
 	"net"
 	"os"
+	"os/exec"
 	"sync"
-	
-	database "cap/data-lib/database"
-	storage "cap/data-lib/storage"
-	config "cap/handler-service/config"
-	pb "cap/handler-service/genproto/task"
-	pbModel "cap/handler-service/genproto/models"
 
+	database "github.com/vp-cap/data-lib/database"
+	storage "github.com/vp-cap/data-lib/storage"
+	config "github.com/vp-cap/handler-service/config"
+	pbModel "github.com/vp-cap/handler-service/genproto/models"
+	pb "github.com/vp-cap/handler-service/genproto/task"
+
+	"github.com/golang/protobuf/ptypes/empty"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
-	"github.com/golang/protobuf/ptypes/empty"
 )
 
 const (
