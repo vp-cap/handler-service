@@ -1,5 +1,6 @@
-tensorflow-gpu==1.13.1
+# tensorflow-gpu==1.13.1
 keras==2.2.4
 numpy==1.16.1
 opencv-python
 imageai
+protobuf==3.14.0

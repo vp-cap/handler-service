@@ -196,7 +196,7 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	addr := "localhost:" + configs.Server.Port
+	addr := ":" + configs.Server.Port
 	// listen on port 
 	lis, err := net.Listen("tcp", ":"+configs.Server.Port)
 	if err != nil {
