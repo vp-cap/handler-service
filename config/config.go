@@ -10,7 +10,6 @@ import (
 
 // Configurations exported
 type Configurations struct {
-	Server   ServerConfigurations
 	Services ServiceConfigurations
 	Database dataConfig.DatabaseConfiguration
 	Storage  dataConfig.StorageConfiguration
@@ -23,7 +22,7 @@ type ServerConfigurations struct {
 
 // ServiceConfigurations exported
 type ServiceConfigurations struct {
-	TaskAllocator string
+	RabbitMq string
 }
 
 // GetConfigs Get Configurations from config.yaml and set in Configurations struct

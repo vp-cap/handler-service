@@ -4,10 +4,8 @@ import (
 	"context"
 	"io/ioutil"
 	"log"
-	"net"
 	"os"
 	"os/exec"
-	"sync"
 
 	database "github.com/vp-cap/data-lib/database"
 	storage "github.com/vp-cap/data-lib/storage"
@@ -15,9 +13,8 @@ import (
 	pbModel "github.com/vp-cap/handler-service/genproto/models"
 	pb "github.com/vp-cap/handler-service/genproto/task"
 
-	"github.com/golang/protobuf/ptypes/empty"
-	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
+	"github.com/streadway/amqp"
 )
 
 const (
@@ -35,14 +32,6 @@ var (
 	store   storage.Storage   = nil
 )
 
-// Handler struct 
-type Handler struct {
-	mu         sync.Mutex
-	addr       string
-	taskCid    string
-	taskStatus pb.TaskStatus_Status
-}
-
 func init() {
 	var err error
 	configs, err = config.GetConfigs()
@@ -51,37 +40,8 @@ func init() {
 	}
 }
 
-// AllocateTask called by task handler to process  
-func (h *Handler) AllocateTask(ctx context.Context, task *pb.Task) (*empty.Empty, error) {
-	h.taskCid = task.VideoCid
-	log.Println("New Task assigned:", h.taskCid)
-
-	err := store.GetVideo(ctx, task.VideoCid, VideoLocation)
-	if err != nil {
-		h.taskCid = ""
-		h.taskStatus = pb.TaskStatus_UNASSIGNED
-		log.Println(err)
-		return &empty.Empty{}, nil
-	}
-	log.Println("Video fetched from storage")
-
-	h.taskStatus = pb.TaskStatus_WORKING
-	go h.processVideo(context.Background(), task.VideoName);
-
-	return &empty.Empty{}, nil 
-}
-
-// GetTaskStatus for the current task
-func (h *Handler) GetTaskStatus(ctx context.Context, e *empty.Empty) (*pb.TaskStatus, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return &pb.TaskStatus{Status: h.taskStatus}, nil
-}
-
-// func ObjectMapper(database.VideoInference *obje)
-
 // call the required binary
-func (h *Handler) processVideo(ctx context.Context, videoName string) {
+func processVideo(ctx context.Context, videoName string) bool {
 	// TODO change to binary process
 	var argsList []string
 
@@ -94,10 +54,7 @@ func (h *Handler) processVideo(ctx context.Context, videoName string) {
 
 	if err != nil {
 		log.Println("Unable to run the process:", err)
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		h.taskStatus = pb.TaskStatus_FAILED
-		return
+		return false
 	}
 	log.Println("Video Inference completed")
 
@@ -105,10 +62,7 @@ func (h *Handler) processVideo(ctx context.Context, videoName string) {
 	videoInference := &pbModel.VideoInference{}
 	if err := proto.Unmarshal(in, videoInference); err != nil {
 		log.Println("Failed to parse address book:", err)
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		h.taskStatus = pb.TaskStatus_FAILED
-		return
+		return false
 	}
 	dbVideoInference := database.VideoInference{}
 	dbVideoInference.Name = videoName
@@ -127,53 +81,13 @@ func (h *Handler) processVideo(ctx context.Context, videoName string) {
 
 	if (err != nil) {
 		log.Println("Unable to store video in db:", err)
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		h.taskStatus = pb.TaskStatus_FAILED
-		return
+		return false
 	}
 
 	log.Println("Video Inference stored in DB")
-	h.mu.Lock()
-	h.taskStatus = pb.TaskStatus_DONE
-	h.mu.Unlock()
-
-	// connect
-	conn, err := grpc.Dial(configs.Services.TaskAllocator, grpc.WithInsecure())
-	if err != nil {
-		log.Println("Could not connect to task allocator", err)
-		return
-	}
-	client := pb.NewRegisterHandlerServiceClient(conn)
-	_, err = client.RegisterTaskComplete(ctx, &pb.Handler{Addr: h.addr})
-	if err != nil {
-		log.Println("Could not register task complete", err)
-		return
-	}
-	log.Println("Registered task complete on task allocator")
+	return true;
 }
 
-// register this handler on the task-handler service
-func (h *Handler) registerOnTaskAllocator() error {
-	// connect
-	// log.Println(configs.Services)
-	conn, err := grpc.Dial(configs.Services.TaskAllocator, grpc.WithInsecure())
-	if err != nil {
-		log.Println(err)
-		return err
-	}
-
-	defer conn.Close()
-
-	client := pb.NewRegisterHandlerServiceClient(conn)
-	_, err = client.RegisterHandler(context.Background(), &pb.Handler{Addr: h.addr})
-	if err != nil {
-		log.Println(err)
-		return err
-	}
-	log.Println("Registered on task allocator")
-	return nil
-}
 
 func main() {
 	// Enable line numbers in logging
@@ -196,29 +110,76 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	addr := ":" + configs.Server.Port
-	// listen on port 
-	lis, err := net.Listen("tcp", ":"+configs.Server.Port)
+	log.Println(configs.Services.RabbitMq)
+	conn, err := amqp.Dial(configs.Services.RabbitMq)
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err)
+		return
 	}
+	defer conn.Close()
 
-	grpcServer := grpc.NewServer()
-
-	handler := &Handler{
-		addr: addr,
-		taskCid: "",
-		taskStatus: pb.TaskStatus_UNASSIGNED,
-	}
-
-	pb.RegisterTaskAllocationServiceServer(grpcServer, handler)
-
-	err = handler.registerOnTaskAllocator()
+	ch, err := conn.Channel()
 	if err != nil {
+		log.Println(err)
+		return
+	}
+	defer ch.Close()
+
+	q, err := ch.QueueDeclare(
+		"task_queue", // name
+		true,         // durable
+		false,        // delete when unused
+		false,        // exclusive
+		false,        // no-wait
+		nil,          // arguments
+	)
+	if err != nil {
+		log.Println(err)
 		return
 	}
 
-	// serve
-	log.Println("Serving on", configs.Server.Port)
-	grpcServer.Serve(lis)
+	err = ch.Qos(
+		1,     // prefetch count
+		0,     // prefetch size
+		false, // global
+	)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	msgs, err := ch.Consume(
+		q.Name, // queue
+		"",     // consumer
+		false,  // auto-ack
+		false,  // exclusive
+		false,  // no-local
+		false,  // no-wait
+		nil,    // args
+	)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	forever := make(chan bool)
+
+	go func() {
+		for d := range msgs {
+			task := &pb.Task{}
+			if err := proto.Unmarshal(d.Body, task); err != nil {
+				log.Fatalln("Failed to parse:", err)
+			}
+			log.Println(task)
+			log.Println("Task Received: ", task.VideoName)
+			
+			if (processVideo(ctx, task.VideoName)) {
+				log.Printf("Done")
+				d.Ack(false)
+			} else {
+				// requeue
+				d.Nack(false, true)
+			}
+		}
+	}()
+	<- forever
 }
