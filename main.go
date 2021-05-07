@@ -14,7 +14,6 @@ import (
 	pb "github.com/vp-cap/handler-service/genproto/task"
 
 	"google.golang.org/protobuf/proto"
-	"github.com/streadway/amqp"
 )
 
 const (
@@ -41,16 +40,29 @@ func init() {
 }
 
 // call the required binary
-func processVideo(ctx context.Context, videoName string) bool {
-	// TODO change to binary process
+func processVideo(ctx context.Context, videoCid string) bool {
+	// If its already there, ignore
+	_, err := db.GetVideoInference(ctx, videoCid)
+	if err == nil {
+		log.Printf("Video Inference for %s already exists", videoCid)
+		return true
+	}
+
+	err = store.GetVideo(ctx, videoCid, VideoLocation)
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+	log.Println("Fetched video from storage")
+
 	var argsList []string
 
-	argsList = append(argsList, "process_video.py", VideoLocation) 
+	log.Println("Processing Video....")
+	argsList = append(argsList, "./process_video.py", VideoLocation)
 	cmd := exec.Command("python", argsList...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	log.Println("Processing Video....")
+	err = cmd.Run()
 
 	if err != nil {
 		log.Println("Unable to run the process:", err)
@@ -58,14 +70,14 @@ func processVideo(ctx context.Context, videoName string) bool {
 	}
 	log.Println("Video Inference completed")
 
-	in, err := ioutil.ReadFile(VideoInferenceLocation)
+	in, _ := ioutil.ReadFile(VideoInferenceLocation)
 	videoInference := &pbModel.VideoInference{}
-	if err := proto.Unmarshal(in, videoInference); err != nil {
+	if err = proto.Unmarshal(in, videoInference); err != nil {
 		log.Println("Failed to parse address book:", err)
 		return false
 	}
 	dbVideoInference := database.VideoInference{}
-	dbVideoInference.Name = videoName
+	dbVideoInference.Name = videoCid
 	dbVideoInference.ObjectCountsEachSecond = videoInference.ObjectCountsEachSecond
 	dbVideoInference.ObjectsToAvgFrequency = videoInference.ObjectsToAvgFrequency
 	dbVideoInference.TopFiveObjectsToAvgFrequency = videoInference.TopFiveObjectsToAvgFrequency
@@ -79,90 +91,51 @@ func processVideo(ctx context.Context, videoName string) bool {
 	// store in the db
 	err = db.InsertVideoInference(ctx, dbVideoInference)
 
-	if (err != nil) {
+	if err != nil {
 		log.Println("Unable to store video in db:", err)
 		return false
 	}
 
 	log.Println("Video Inference stored in DB")
-	return true;
+	return true
 }
-
 
 func main() {
 	// Enable line numbers in logging
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	log.Println(configs.Storage)
 	ctx := context.Background()
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithCancel(ctx)
 	defer cancel()
 
 	// DB and store
+	// TODO add connection close method in the interface of db and store
 	var err error
 	db, err = database.GetDatabaseClient(ctx, configs.Database)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalln("Unable to connect to DB", err)
 	}
+	log.Println("Connected to DB")
 	store, err = storage.GetStorageClient(configs.Storage)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalln("Unable to connect to Storage", err)
 	}
+	log.Println("Connected to Storage")
 
-	log.Println(configs.Services.RabbitMq)
-	conn, err := amqp.Dial(configs.Services.RabbitMq)
+	conn, err := getTaskQueueConnection()
 	if err != nil {
-		log.Println(err)
-		return
+		log.Fatalln("Unable to connect to Storage", err)
 	}
 	defer conn.Close()
-
-	ch, err := conn.Channel()
-	if err != nil {
-		log.Println(err)
-		return
+	msgs, err := getChannelForMessages(conn)
+	if (err != nil) {
+		log.Fatalln("Failed to connect to task queue", err)
 	}
-	defer ch.Close()
-
-	q, err := ch.QueueDeclare(
-		"task_queue", // name
-		true,         // durable
-		false,        // delete when unused
-		false,        // exclusive
-		false,        // no-wait
-		nil,          // arguments
-	)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	err = ch.Qos(
-		1,     // prefetch count
-		0,     // prefetch size
-		false, // global
-	)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	msgs, err := ch.Consume(
-		q.Name, // queue
-		"",     // consumer
-		false,  // auto-ack
-		false,  // exclusive
-		false,  // no-local
-		false,  // no-wait
-		nil,    // args
-	)
-	if err != nil {
-		log.Println(err)
-		return
-	}
+	log.Println("Connected to the task queue")
 
 	forever := make(chan bool)
-
+	// Look out for messages from the task queue.
 	go func() {
 		for d := range msgs {
 			task := &pb.Task{}
@@ -171,8 +144,8 @@ func main() {
 			}
 			log.Println(task)
 			log.Println("Task Received: ", task.VideoName)
-			
-			if (processVideo(ctx, task.VideoName)) {
+
+			if processVideo(ctx, task.VideoCid) {
 				log.Printf("Done")
 				d.Ack(false)
 			} else {
@@ -181,5 +154,5 @@ func main() {
 			}
 		}
 	}()
-	<- forever
+	<-forever
 }
