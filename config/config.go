@@ -15,11 +15,6 @@ type Configurations struct {
 	Storage  dataConfig.StorageConfiguration
 }
 
-// ServerConfigurations exported
-type ServerConfigurations struct {
-	Port string
-}
-
 // ServiceConfigurations exported
 type ServiceConfigurations struct {
 	RabbitMq string

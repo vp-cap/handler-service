@@ -50,6 +50,7 @@ def forFull(output_arrays, count_arrays, average_output_count):
     for item in count_arrays:
         i += 1
         if curr != '' and (i - prev_index + 1 < MIN_DURATION_AD_SECONDS * FPS):
+            topFiveObjectsToInterval[curr] = models.Interval(start=prev_index, end=i - 1)
             continue
         if not item:
             if curr != '' and (curr not in topFiveObjectsToInterval or i - prev_index -1 > topFiveObjectsToInterval[curr].end - topFiveObjectsToInterval[curr].start):
